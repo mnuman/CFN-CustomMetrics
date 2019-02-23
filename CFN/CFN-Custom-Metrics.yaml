@@ -42,7 +42,6 @@ Resources:
               python3: []
               python3-devel: []
               gcc: []
-              git: []
           groups:
             apache: {}
           users:
@@ -92,6 +91,9 @@ Resources:
           commands:
             install-python-deps:
               command: "sudo pip3 install psutil boto3 requests"
+              cwd: "~"
+            install-custom-metrics-script:
+              command: "curl https://raw.githubusercontent.com/mnuman/CFN-CustomMetrics/master/Python-Custom-Metrics/metrics.py -o metrics.py; chmod 700 metrics.py"
               cwd: "~"
             test:
               command: "echo \"$MAGIC\" > test.txt"
