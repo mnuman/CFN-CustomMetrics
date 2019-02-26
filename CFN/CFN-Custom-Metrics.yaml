@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS CloudFormation Sample Template for CFN Init
+Description: AWS CloudFormation template to create an EC2 instance that reports custom metrics to CloudWatch
 Parameters:
   KeyName:
     Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
@@ -13,8 +13,45 @@ Parameters:
     Default: 0.0.0.0/0
     AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
     ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
-
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  MetricsScriptURI:
+    Description: The URI of the script that collects the metrics
+    Type: String
+    Default: https://raw.githubusercontent.com/mnuman/CFN-CustomMetrics/master/Python-Custom-Metrics/metrics.py
 Resources:
+  EC2CloudWatchMetricsRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  RolePolicies:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "EC2CloudWatchMetricsPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action: "cloudwatch:PutMetricData"
+            Resource: "*"
+      Roles:
+        - !Ref EC2CloudWatchMetricsRole
+  CloudWatchMetricsRoleProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref EC2CloudWatchMetricsRole
   WebServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -28,12 +65,114 @@ Resources:
         FromPort: '22'
         ToPort: '22'
         CidrIp: !Ref SSHLocation
-
   WebServerHost:
     Type: AWS::EC2::Instance
     Metadata:
       Comment: Install a simple PHP application
       AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - "os-packages"
+            - "apache-configuration"
+            - "script-setup"
+        os-packages:
+          packages:
+            yum:
+              httpd: []
+              php: []
+              python3: []
+              python3-devel: []
+              gcc: []
+          sources:
+            "/home/ec2-user/aws-cli": "https://github.com/aws/aws-cli/tarball/master"
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.WebServerHost.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebServerHost --region ${AWS::Region}
+              mode: "000400"
+              owner: "root"
+              group: "root"
+        apache-configuration:
+          groups:
+            apache: {}
+          users:
+            "apache":
+              groups:
+                - "apache"
+          files:
+            "/tmp/cwlogs/apacheaccess.conf":
+              content: !Sub |
+                [general]
+                state_file= /var/awslogs/agent-state
+                [/var/log/httpd/access_log]
+                file = /var/log/httpd/access_log
+                log_group_name = ${AWS::StackName}
+                log_stream_name = {instance_id}/apache.log
+                datetime_format = %d/%b/%Y:%H:%M:%S
+              mode: '000400'
+              owner: apache
+              group: apache
+            "/var/www/html/index.php":
+              content: !Sub |
+                <?php
+                echo '<h1>AWS CloudFormation sample PHP application for ${AWS::StackName}</h1>';
+                ?>
+              mode: '000644'
+              owner: apache
+              group: apache
+          services:
+            sysvinit:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+        script-setup:
+          files:
+            "/home/ec2-user/.aws/config":
+              content: !Sub |
+                [default]
+                region=${AWS::Region}
+              mode: "000400"
+              owner: "ec2-user"
+              group: "ec2-user"
+            "/home/ec2-user/metrics.py":
+              source: !Ref MetricsScriptURI
+              mode: "000700"
+              owner: "root"
+              group: "root"
+            "/tmp/crontab":
+              content: !Sub |
+                */1 * * * *  /home/ec2-user/metrics.py
+              mode: "000400"
+              owner: "ec2-user"
+              group: "ec2-user"
+          commands:
+            install-python-deps:
+              command: "sudo pip3 install psutil boto3 requests"
+              cwd: "~"
+        schedule-python-metrics:
+            "/tmp/crontab":
+              content: !Sub |
+                */1 * * * *  /home/ec2-user/metrics.py
+              mode: "000400"
+              owner: "ec2-user"
+              group: "ec2-user"
+          commands:
+            schedule-python-metrics:
+              command: "crontab -u ec2-user /tmp/crontab && rm /tmp/crontab"
+              cwd: "~"
+
+---- original
         config:
           packages:
             yum:
@@ -88,31 +227,42 @@ Resources:
               mode: "000400"
               owner: "root"
               group: "root"
+            "/home/ec2-user/.aws/config":
+              content: !Sub |
+                [default]
+                region=${AWS::Region}
+              mode: "000400"
+              owner: "ec2-user"
+              group: "ec2-user"
+            "/home/ec2-user/metrics.py":
+              source: !Ref MetricsScriptURI
+              mode: "000700"
+              owner: "root"
+              group: "root"
+            "/tmp/crontab":
+              content: !Sub |
+                */1 * * * *  /home/ec2-user/metrics.py
+              mode: "000400"
+              owner: "ec2-user"
+              group: "ec2-user"
           commands:
             install-python-deps:
               command: "sudo pip3 install psutil boto3 requests"
               cwd: "~"
-            install-custom-metrics-script:
-              command: "curl https://raw.githubusercontent.com/mnuman/CFN-CustomMetrics/master/Python-Custom-Metrics/metrics.py -o metrics.py; chmod 700 metrics.py"
-              cwd: "~"
-            test:
-              command: "echo \"$MAGIC\" > test.txt"
-              env:
-                MAGIC: "I come from the environment!"
+            schedule-python-metrics:
+              command: "crontab -u ec2-user /tmp/crontab"
               cwd: "~"
           services:
             sysvinit:
               httpd:
                 enabled: 'true'
                 ensureRunning: 'true'
-              sendmail:
-                enabled: 'false'
-                ensureRunning: 'false'
     CreationPolicy:
       ResourceSignal:
-        Timeout: PT10M
+        Timeout: PT20M
     Properties:
-      ImageId: ami-0fad7378adf284ce0
+      ImageId: !Ref LatestAmiId
+      IamInstanceProfile: !Ref CloudWatchMetricsRoleProfile
       KeyName:
         Ref: KeyName
       InstanceType: t2.micro
@@ -130,7 +280,6 @@ Resources:
             /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
             # All done so signal success
             /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource WebServerHost --region ${AWS::Region}
-
 Outputs:
   InstanceId:
     Description: The instance ID of the web server
