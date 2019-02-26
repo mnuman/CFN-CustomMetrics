@@ -75,6 +75,7 @@ Resources:
             - "os-packages"
             - "apache-configuration"
             - "script-setup"
+            - "schedule-python-metrics"
         os-packages:
           packages:
             yum:
@@ -148,12 +149,6 @@ Resources:
             "/home/ec2-user/metrics.py":
               source: !Ref MetricsScriptURI
               mode: "000700"
-              owner: "root"
-              group: "root"
-            "/tmp/crontab":
-              content: !Sub |
-                */1 * * * *  /home/ec2-user/metrics.py
-              mode: "000400"
               owner: "ec2-user"
               group: "ec2-user"
           commands:
@@ -161,102 +156,17 @@ Resources:
               command: "sudo pip3 install psutil boto3 requests"
               cwd: "~"
         schedule-python-metrics:
+          files:
             "/tmp/crontab":
               content: !Sub |
                 */1 * * * *  /home/ec2-user/metrics.py
               mode: "000400"
-              owner: "ec2-user"
-              group: "ec2-user"
+              owner: "root"
+              group: "root"
           commands:
             schedule-python-metrics:
               command: "crontab -u ec2-user /tmp/crontab && rm /tmp/crontab"
               cwd: "~"
-
----- original
-        config:
-          packages:
-            yum:
-              httpd: []
-              php: []
-              python3: []
-              python3-devel: []
-              gcc: []
-          groups:
-            apache: {}
-          users:
-            "apache":
-              groups:
-                - "apache"
-          sources:
-            "/home/ec2-user/aws-cli": "https://github.com/aws/aws-cli/tarball/master"
-          files:
-            "/tmp/cwlogs/apacheaccess.conf":
-              content: !Sub |
-                [general]
-                state_file= /var/awslogs/agent-state
-                [/var/log/httpd/access_log]
-                file = /var/log/httpd/access_log
-                log_group_name = ${AWS::StackName}
-                log_stream_name = {instance_id}/apache.log
-                datetime_format = %d/%b/%Y:%H:%M:%S
-              mode: '000400'
-              owner: apache
-              group: apache
-            "/var/www/html/index.php":
-              content: !Sub |
-                <?php
-                echo '<h1>AWS CloudFormation sample PHP application for ${AWS::StackName}</h1>';
-                ?>
-              mode: '000644'
-              owner: apache
-              group: apache
-            "/etc/cfn/cfn-hup.conf":
-              content: !Sub |
-                [main]
-                stack=${AWS::StackId}
-                region=${AWS::Region}
-              mode: "000400"
-              owner: "root"
-              group: "root"
-            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
-              content: !Sub |
-                [cfn-auto-reloader-hook]
-                triggers=post.update
-                path=Resources.WebServerHost.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebServerHost --region ${AWS::Region}
-              mode: "000400"
-              owner: "root"
-              group: "root"
-            "/home/ec2-user/.aws/config":
-              content: !Sub |
-                [default]
-                region=${AWS::Region}
-              mode: "000400"
-              owner: "ec2-user"
-              group: "ec2-user"
-            "/home/ec2-user/metrics.py":
-              source: !Ref MetricsScriptURI
-              mode: "000700"
-              owner: "root"
-              group: "root"
-            "/tmp/crontab":
-              content: !Sub |
-                */1 * * * *  /home/ec2-user/metrics.py
-              mode: "000400"
-              owner: "ec2-user"
-              group: "ec2-user"
-          commands:
-            install-python-deps:
-              command: "sudo pip3 install psutil boto3 requests"
-              cwd: "~"
-            schedule-python-metrics:
-              command: "crontab -u ec2-user /tmp/crontab"
-              cwd: "~"
-          services:
-            sysvinit:
-              httpd:
-                enabled: 'true'
-                ensureRunning: 'true'
     CreationPolicy:
       ResourceSignal:
         Timeout: PT20M
@@ -280,6 +190,19 @@ Resources:
             /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
             # All done so signal success
             /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource WebServerHost --region ${AWS::Region}
+  CustomMetricDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: CustomMetrics
+      DashboardBody: !Join
+        -  ""
+        - - '{"widgets": [ { "type": "metric", "x": 0, "y": 0, "width": 6, "height": 6, "properties": { "metrics": [ [ "CustomMetrics", "ApacheMemory", "InstanceId","'
+          - !Ref WebServerHost
+          - '", "InstanceType", "t2.micro", { "period": 60 } ] ], "view": "timeSeries", "stacked": false, "region": "eu-west-1", "period": 300 } }, { "type": "metric", "x": 6, "y": 0, "width": 6, "height": 6, "properties": { "metrics": [ [ "CustomMetrics", "DiskspaceUsed", "InstanceId","'
+          - !Ref WebServerHost
+          - '", "InstanceType", "t2.micro", { "period": 60 } ] ], "view": "timeSeries", "stacked": true, "region": "eu-west-1", "period": 300 } }, { "type": "metric", "x": 12, "y": 0, "width": 6, "height": 3, "properties": { "metrics": [ [ "CustomMetrics", "MemoryInUse", "InstanceId", "'
+          - !Ref WebServerHost
+          - '", "InstanceType", "t2.micro", { "period": 60 } ] ], "view": "singleValue", "region": "eu-west-1", "period": 300 } } ] }'
 Outputs:
   InstanceId:
     Description: The instance ID of the web server
