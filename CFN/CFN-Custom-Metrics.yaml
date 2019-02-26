@@ -146,6 +146,31 @@ Resources:
               mode: "000400"
               owner: "ec2-user"
               group: "ec2-user"
+            "/home/ec2-user/generateSomeLoad.sh":
+              content: |
+                #!/usr/bin/env bash
+                typeset -i i j
+                i=0
+                while [ $(df --block-size=1M --output=avail / | tail -1) -gt 500 ];
+                do
+                  # generate a 1GB file each iteration
+                  fallocate -l 1G test${i}.img
+                  echo "Created a 1GB file"
+                  j=0
+                  while [ $j -lt 100 ]; do
+                    (curl localhost 2>&1) > /dev/null &
+                    j=$j+1
+                  done
+                  echo "Done curling"
+                  i=$i+1
+                  sleep 30
+                  echo "Done sleeping"
+                done
+                # your mama does not work here - clean up after yourself!
+                rm -f test*.img
+              mode: "000700"
+              owner: "ec2-user"
+              group: "ec2-user"
             "/home/ec2-user/metrics.py":
               source: !Ref MetricsScriptURI
               mode: "000700"
@@ -160,6 +185,7 @@ Resources:
             "/tmp/crontab":
               content: !Sub |
                 */1 * * * *  /home/ec2-user/metrics.py
+                */8 * * * *  /home/ec2-user/generateSomeLoad.sh
               mode: "000400"
               owner: "root"
               group: "root"
@@ -193,7 +219,7 @@ Resources:
   CustomMetricDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
-      DashboardName: CustomMetrics
+      DashboardName: !Sub Dashboard_Stack_${AWS::StackName}
       DashboardBody: !Join
         -  ""
         - - '{"widgets": [ { "type": "metric", "x": 0, "y": 0, "width": 6, "height": 6, "properties": { "metrics": [ [ "CustomMetrics", "ApacheMemory", "InstanceId","'
@@ -216,3 +242,7 @@ Outputs:
     Description: Public IP address of the web server
     Value:
       !GetAtt WebServerHost.PublicIp
+  Dashboard:
+    Description: Custom dashboard created for stack
+    Value:
+      Ref: CustomMetricDashboard
